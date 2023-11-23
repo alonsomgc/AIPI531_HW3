@@ -47,19 +47,21 @@ def parse_args():
     parser.add_argument('--num_heads', default=1, type=int,help='number heads (for SASRec)')
     parser.add_argument('--num_blocks', default=1, type=int, help='number heads (for SASRec)')
     parser.add_argument('--dropout_rate', default=0.1, type=float)
+    parser.add_argument('--lam', type=float, default=0.0)
 
 
     return parser.parse_args()
 
 
 class QNetwork:
-    def __init__(self, hidden_size, learning_rate, item_num, state_size, pretrain, lam=0, name='DQNetwork'): # added args and lam hyperparameter
+    def __init__(self, hidden_size, learning_rate, item_num, state_size, pretrain, item_features, lam, name='DQNetwork'): # added args and lam hyperparameter
         tf.compat.v1.disable_eager_execution()  
         self.state_size = state_size
         self.learning_rate = learning_rate
         self.hidden_size = hidden_size
         self.item_num = int(item_num)
         self.pretrain = pretrain
+        self.item_features = item_features # add item features
         self.lam = lam # added lam hyperparameter
         self.neg=args.neg
         self.weight=args.weight
@@ -208,11 +210,15 @@ class QNetwork:
             self.output1 = tf.compat.v1.layers.dense(self.states_hidden, self.item_num)  # all q-values
 
             # without item features
-            self.output2= tf.compat.v1.layers.dense(self.states_hidden, self.item_num, name="ce-logits1")  # all ce logits
+            self.output2 = tf.compat.v1.layers.dense(self.states_hidden, self.item_num, name="ce-logits1")  # all ce logits
             # with item features
-            self.output3= tf.compat.v1.layers.dense(self.states_hidden, self.item_num, name="ce-logits2")  # all ce logits
-            # final logits
-            self.output4= lam*self.output3 + (1-lam)*self.output2
+            if lam==0: # if not considering features
+                self.output4 = self.output2
+            else: 
+                self.output3 = tf.compat.v1.layers.dense(self.item_features, self.hidden_size, name="ce-logits2")  # all ce logits
+                self.output3 = tf.matmul(self.states_hidden, self.output3, transpose_b=True)
+                # final logits
+                self.output4 = lam*self.output3 + (1-lam)*self.output2
             # TRFL way
             self.actions = tf.placeholder(tf.int32, [None])
 
@@ -329,20 +335,24 @@ if __name__ == '__main__':
     data_directory = args.data
     data_statis = pd.read_pickle(
         os.path.join(data_directory, 'data_statis.df'))  # read data statistics, includeing state_size and item_num
+    item_features = pd.read_csv(
+        os.path.join(data_directory, 'item_properties.csv'))
+    item_features = item_features.to_numpy(dtype=np.float32)
     state_size = data_statis['state_size'][0]  # the length of history to define the state
     item_num = data_statis['item_num'][0]  # total number of items
     reward_click = args.r_click
     reward_buy = args.r_buy
     reward_negative=args.r_negative
+    lam=args.lam
     topk=[5,10,15,20]
     # save_file = 'pretrain-GRU/%d' % (hidden_size)
 
     tf.reset_default_graph()
 
     QN_1 = QNetwork(name='QN_1', hidden_size=args.hidden_factor, learning_rate=args.lr, item_num=item_num,
-                    state_size=state_size, pretrain=False)
+                    state_size=state_size, pretrain=False, item_features=item_features, lam=lam)
     QN_2 = QNetwork(name='QN_2', hidden_size=args.hidden_factor, learning_rate=args.lr, item_num=item_num,
-                    state_size=state_size, pretrain=False)
+                    state_size=state_size, pretrain=False, item_features=item_features, lam=lam)
 
     replay_buffer = pd.read_pickle(os.path.join(data_directory, 'replay_buffer.df'))
     # saver = tf.train.Saver()
